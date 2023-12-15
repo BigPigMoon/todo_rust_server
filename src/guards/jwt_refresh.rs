@@ -1,5 +1,6 @@
 use std::env;
 
+use crate::guards::jwt_access::JwtAccessToken;
 use jwt_simple::prelude::{Duration, *};
 use rocket::{
     http::Status,
@@ -9,10 +10,8 @@ use rocket::{
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(crate = "rocket::serde")]
-pub struct JwtData {
-    pub uid: i32,
-    pub email: String,
-    pub scope: String,
+pub struct JwtRefreshToken {
+    pub token: String,
 }
 
 #[derive(Debug)]
@@ -22,19 +21,21 @@ pub enum AuthError {
 }
 
 #[rocket::async_trait]
-impl<'r> FromRequest<'r> for JwtData {
+impl<'r> FromRequest<'r> for JwtRefreshToken {
     type Error = AuthError;
 
     async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        fn decode_token(token: &str) -> Outcome<JwtData, AuthError> {
+        fn decode_token(token: &str) -> Outcome<JwtRefreshToken, AuthError> {
             let options = get_options();
 
             let key = env::var("JWT_KEY").expect("JWT_KEY is not set in .env file");
             let key = HS256Key::from_bytes(key.as_bytes());
 
-            match key.verify_token::<JwtData>(token, Some(options)) {
-                Ok(data) => Outcome::Success(data.custom),
-                Err(_) => Outcome::Error((Status::Unauthorized, AuthError::Invalid)),
+            match key.verify_token::<JwtAccessToken>(token, Some(options)) {
+                Ok(data) if data.custom.scope == "refresh" => Outcome::Success(JwtRefreshToken {
+                    token: token.to_owned(),
+                }),
+                _ => Outcome::Error((Status::Unauthorized, AuthError::Invalid)),
             }
         }
 

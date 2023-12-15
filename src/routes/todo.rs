@@ -1,6 +1,6 @@
 use crate::entities::prelude::Todo;
 use crate::entities::todo;
-use crate::guards::jwt_guard::JwtData;
+use crate::guards::jwt_access::JwtAccessToken;
 use rocket::{
     serde::{json::Json, Deserialize},
     State,
@@ -14,7 +14,7 @@ struct CreateTodo<'r> {
 }
 
 #[get("/")]
-async fn get_todos(db: &State<DatabaseConnection>, _jwt: JwtData) -> Json<Vec<todo::Model>> {
+async fn get_todos(db: &State<DatabaseConnection>, _jwt: JwtAccessToken) -> Json<Vec<todo::Model>> {
     let db = db as &DatabaseConnection;
 
     let todos: Vec<todo::Model> = Todo::find().all(db).await.unwrap();

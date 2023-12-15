@@ -5,12 +5,14 @@ use rocket::{
     serde::{json::Json, Deserialize, Serialize},
     State,
 };
-use sea_orm::{ActiveValue, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
+};
 use std::env;
 
 use crate::{
     entities::{prelude::User, user},
-    guards::jwt_guard::JwtData,
+    guards::{jwt_access::JwtAccessToken, jwt_refresh::JwtRefreshToken},
 };
 
 #[derive(Deserialize)]
@@ -69,7 +71,6 @@ async fn signin(
         Duration::from_days(14),
     );
 
-    // TODO: write hash of refresh token into user
     let mut user: user::ActiveModel = user.into();
 
     user.refresh_hash = ActiveValue::Set(Some(refresh.clone()));
@@ -129,6 +130,8 @@ async fn signup(
 
     user.refresh_hash = ActiveValue::Set(Some(refresh.clone()));
 
+    user.update(db).await.unwrap();
+
     Ok(Json(Tokens {
         access: gen_token(
             &key,
@@ -143,7 +146,7 @@ async fn signup(
 }
 
 fn gen_token(key: &HS256Key, uid: i32, email: String, scope: String, duration: Duration) -> String {
-    let access_data = JwtData { uid, email, scope };
+    let access_data = JwtAccessToken { uid, email, scope };
 
     let claims = Claims::with_custom_claims(access_data, duration);
 
@@ -151,26 +154,64 @@ fn gen_token(key: &HS256Key, uid: i32, email: String, scope: String, duration: D
 }
 
 #[post("/logout")]
-async fn logout(_db: &State<DatabaseConnection>, cred: JwtData) -> Status {
+async fn logout(_db: &State<DatabaseConnection>, cred: JwtAccessToken) -> Status {
     println!("{:?}", cred);
+
+    let db = _db as &DatabaseConnection;
+
+    let mut user: user::ActiveModel = match User::find_by_id(cred.uid).one(db).await {
+        Ok(user) => user.unwrap(),
+        Err(_) => return Status::NotFound,
+    }
+    .into();
+
+    user.refresh_hash = ActiveValue::Set(None);
+
+    user.update(db).await.unwrap();
+
     Status::Ok
 }
 
 #[post("/refresh")]
-async fn refresh(db: &State<DatabaseConnection>, cred: JwtData) -> Result<Json<Tokens>, Status> {
-    if cred.scope != "refresh" {
-        return Err(Status::BadRequest);
-    }
-
+async fn refresh_token(
+    db: &State<DatabaseConnection>,
+    refresh: JwtRefreshToken,
+) -> Result<Json<Tokens>, Status> {
     let db = db as &DatabaseConnection;
+
+    let key = env::var("JWT_KEY").expect("JWT_KEY is not set in .env file");
+    let key = HS256Key::from_bytes(key.as_bytes());
+
+    let cred = key
+        .verify_token::<JwtAccessToken>(
+            &refresh.token,
+            Some(VerificationOptions {
+                accept_future: false,
+                time_tolerance: Some(Duration::from_secs(0)),
+                ..Default::default()
+            }),
+        )
+        .unwrap()
+        .custom;
 
     let user = match User::find_by_id(cred.uid).one(db).await {
         Ok(user) => user.unwrap(),
         Err(_) => return Err(Status::NotFound),
     };
 
-    let key = env::var("JWT_KEY").expect("JWT_KEY is not set in .env file");
-    let key = HS256Key::from_bytes(key.as_bytes());
+    // TODO: check if storage refresh and requested refresh are equeal
+
+    match user.refresh_hash {
+        Some(token) if token.eq(&refresh.token) => return Err(Status::Forbidden),
+        Some(_) => {}
+        None => return Err(Status::Unauthorized),
+    };
+
+    // TODO: generate new refresh
+
+    // TODO: write new refresh into database
+
+    // TODO: return new refresh and access
 
     Ok(Json(Tokens {
         access: "slkdjf".to_string(),
@@ -179,5 +220,5 @@ async fn refresh(db: &State<DatabaseConnection>, cred: JwtData) -> Result<Json<T
 }
 
 pub fn routes() -> Vec<rocket::Route> {
-    routes![signin, signup, logout, refresh]
+    routes![signin, signup, logout, refresh_token]
 }
